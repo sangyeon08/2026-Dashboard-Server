@@ -1,0 +1,74 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  IMAGE_NAME: dashboard
+
+jobs:
+  build-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - run: >
+          az acr build
+          --registry "${{ vars.ACR_NAME }}"
+          --image "$IMAGE_NAME:${{ github.run_id }}"
+          --image "$IMAGE_NAME:latest"
+          --file Dockerfile .
+
+  deploy-staging:
+    if: github.ref == 'refs/heads/develop'
+    needs: build-image
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - run: |
+          ACR_USER=$(az acr credential show --name "${{ vars.ACR_NAME }}" --query username -o tsv)
+          ACR_PASS=$(az acr credential show --name "${{ vars.ACR_NAME }}" --query "passwords[0].value" -o tsv)
+          az webapp config container set \
+            --name "${{ vars.STAGING_WEBAPP }}" \
+            --resource-group "${{ vars.RESOURCE_GROUP }}" \
+            --container-image-name "${{ vars.ACR_NAME }}.azurecr.io/$IMAGE_NAME:${{ github.run_id }}" \
+            --docker-registry-server-url "https://${{ vars.ACR_NAME }}.azurecr.io" \
+            --docker-registry-server-user "$ACR_USER" \
+            --docker-registry-server-password "$ACR_PASS"
+          az webapp restart --name "${{ vars.STAGING_WEBAPP }}" --resource-group "${{ vars.RESOURCE_GROUP }}"
+
+  deploy-production:
+    if: github.ref == 'refs/heads/main'
+    needs: build-image
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - run: |
+          ACR_USER=$(az acr credential show --name "${{ vars.ACR_NAME }}" --query username -o tsv)
+          ACR_PASS=$(az acr credential show --name "${{ vars.ACR_NAME }}" --query "passwords[0].value" -o tsv)
+          az webapp config container set \
+            --name "${{ vars.PROD_WEBAPP }}" \
+            --resource-group "${{ vars.RESOURCE_GROUP }}" \
+            --container-image-name "${{ vars.ACR_NAME }}.azurecr.io/$IMAGE_NAME:${{ github.run_id }}" \
+            --docker-registry-server-url "https://${{ vars.ACR_NAME }}.azurecr.io" \
+            --docker-registry-server-user "$ACR_USER" \
+            --docker-registry-server-password "$ACR_PASS"
+          az webapp restart --name "${{ vars.PROD_WEBAPP }}" --resource-group "${{ vars.RESOURCE_GROUP }}"
